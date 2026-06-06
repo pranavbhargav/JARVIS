@@ -1,0 +1,8 @@
+SpeechRecognition==3.10.0
+pyttsx3==2.90
+nltk==3.8.1
+python-dotenv==1.0.0
+requests==2.31.0
+# Optional packages:
+# spacy==3.7.2  # Advanced NLP (optional)
+# pyaudio==0.2.13  # Audio input (requires system libs: apt install portaudio19-dev)
