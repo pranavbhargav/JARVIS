@@ -1,0 +1,136 @@
+diff --git a/action_executor.py b/action_executor.py
+index 0966a7b..bf5bec9 100644
+--- a/action_executor.py
++++ b/action_executor.py
+@@ -4,10 +4,12 @@ Executes actions based on recognized intents with comprehensive error handling
+ """
+ 
+ import os
++import shlex
+ import subprocess
+ import webbrowser
+ import random
+ import logging
++from urllib.parse import quote_plus
+ from datetime import datetime, timedelta
+ from typing import Optional, Dict, Any, Callable, List
+ from config import COMMANDS
+@@ -40,7 +42,6 @@ class ActionExecutor:
+         "How many programmers does it take to change a light bulb? None, that's a hardware problem!",
+         "Why was the computer cold? It left its Windows open!",
+         "Why do Java developers never get lonely? They're always with their Object-Oriented friends!",
+-        "How many programmers does it take to change a light bulb? None, that's a hardware problem!"
+     ]
+     
+     # Application command mappings per OS
+@@ -258,7 +259,7 @@ class ActionExecutor:
+             )
+             
+             logger.debug(f"Opening application with command: {command}")
+-            subprocess.Popen(command)
++            subprocess.Popen(shlex.split(command) if os.name != "nt" else command)
+             
+             response = random.choice(intent_config["responses"]).format(data=app)
+             self.voice_output.speak(response)
+@@ -282,7 +283,7 @@ class ActionExecutor:
+                 logger.warning("No search query provided")
+                 return
+             
+-            search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
++            search_url = f"https://www.google.com/search?q={quote_plus(query)}"
+             logger.debug(f"Opening search URL: {search_url}")
+             
+             webbrowser.open(search_url)
+diff --git a/nlp_engine.py b/nlp_engine.py
+index bdbe837..b64655a 100644
+--- a/nlp_engine.py
++++ b/nlp_engine.py
+@@ -171,6 +171,30 @@ class IntentRecognizer:
+             logger.error(f"Error calculating specificity: {e}")
+             return 0
+     
++    # Trigger phrases for parameter extraction, longest-first so multi-word
++    # triggers (e.g. "remind me to") are consumed whole instead of leaving
++    # leftover filler words ("me to ...") in the extracted text.
++    _REMINDER_TRIGGERS = [
++        "set a reminder for", "set a reminder to", "set reminder for",
++        "remind me to", "remind me about", "remind me", "remember to",
++        "reminder", "remember", "remind",
++    ]
++    _SEARCH_TRIGGERS = [
++        "search the web for", "look up", "look for", "search for",
++        "find information about", "find information on", "search",
++        "find", "lookup",
++    ]
++
++    def _extract_after_trigger(self, text: str, triggers: List[str]) -> Optional[str]:
++        """Find the longest matching trigger phrase and return the text after it, trimmed."""
++        text_lower = text.lower()
++        for trigger in sorted(triggers, key=len, reverse=True):
++            match = re.search(rf"\b{re.escape(trigger)}\b\s*", text_lower)
++            if match:
++                remainder = text[match.end():].strip()
++                return remainder or None
++        return None
++
+     def extract_parameters(self, user_text: str, intent_name: str) -> Dict[str, Any]:
+         """Extract specific parameters based on intent"""
+         try:
+@@ -184,27 +208,15 @@ class IntentRecognizer:
+                     logger.debug(f"Extracted app parameter: {params['app']}")
+             
+             elif intent_name == "reminder":
+-                # Extract reminder text
+-                words = user_text.split()
+-                reminder_start = -1
+-                for i, word in enumerate(words):
+-                    if word.lower() in ["remind", "reminder", "remember"]:
+-                        reminder_start = i + 1
+-                        break
+-                if reminder_start != -1 and reminder_start < len(words):
+-                    params["reminder_text"] = " ".join(words[reminder_start:])
++                reminder_text = self._extract_after_trigger(user_text, self._REMINDER_TRIGGERS)
++                if reminder_text:
++                    params["reminder_text"] = reminder_text
+                     logger.debug(f"Extracted reminder: {params['reminder_text']}")
+             
+             elif intent_name == "search":
+-                # Extract search query
+-                words = user_text.split()
+-                search_start = -1
+-                for i, word in enumerate(words):
+-                    if word.lower() in ["search", "find", "look", "lookup"]:
+-                        search_start = i + 1
+-                        break
+-                if search_start != -1 and search_start < len(words):
+-                    params["query"] = " ".join(words[search_start:])
++                query = self._extract_after_trigger(user_text, self._SEARCH_TRIGGERS)
++                if query:
++                    params["query"] = query
+                     logger.debug(f"Extracted search query: {params['query']}")
+             
+             return params
+diff --git a/test_agent.py b/test_agent.py
+index c0cb430..e909887 100644
+--- a/test_agent.py
++++ b/test_agent.py
+@@ -43,6 +43,19 @@ class TestIntentRecognizer(unittest.TestCase):
+         params = self.recognizer.extract_parameters("search for python", "search")
+         self.assertIn("query", params)
+         self.assertIn("python", params["query"])
++
++    def test_search_query_strips_filler_words(self):
++        """'look up X' / 'search for X' should not leak 'up'/'for' into the query"""
++        params = self.recognizer.extract_parameters("look up python tutorials", "search")
++        self.assertEqual(params["query"], "python tutorials")
++
++        params = self.recognizer.extract_parameters("search for machine learning", "search")
++        self.assertEqual(params["query"], "machine learning")
++
++    def test_reminder_text_strips_filler_words(self):
++        """'remind me to X' should not leak 'me to' into the reminder text"""
++        params = self.recognizer.extract_parameters("remind me to buy groceries", "reminder")
++        self.assertEqual(params["reminder_text"], "buy groceries")
+     
+     def test_confidence_threshold(self):
+         """Test confidence threshold"""
